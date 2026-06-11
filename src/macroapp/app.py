@@ -22,6 +22,8 @@ from typing import List, Optional
 from PIL import Image, ImageGrab, ImageTk
 
 from .cropper import ScreenCropper
+from .editor import EventEditor
+from .hotkeys import HotkeyCapture, HotkeyManager
 from .matcher import ImageMatcher
 from .player import (
     MATCH_CLICK_IMAGE,
@@ -31,6 +33,7 @@ from .player import (
     MacroPlayer,
 )
 from .recorder import MacroRecorder
+from .share import decode_macro, encode_macro
 from .storage import Macro, Storage
 
 MATCH_LABELS = {
@@ -64,6 +67,7 @@ class MacroApp(tk.Tk):
         self.recorder = MacroRecorder()
         self.player = MacroPlayer()
         self.matcher = ImageMatcher()
+        self.hotkeys = HotkeyManager()
 
         self.macros: List[Macro] = self.storage.load()
         self.current: Optional[Macro] = None
@@ -75,6 +79,7 @@ class MacroApp(tk.Tk):
         if self.macros:
             self.listbox.selection_set(0)
             self._on_select()
+        self._refresh_hotkeys()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ----------------------------------------------------------------- build
@@ -93,6 +98,10 @@ class MacroApp(tk.Tk):
         btns.pack(fill="x", pady=4)
         ttk.Button(btns, text="New", command=self._new_macro).pack(side="left", expand=True, fill="x")
         ttk.Button(btns, text="Delete", command=self._delete_macro).pack(side="left", expand=True, fill="x")
+        share = ttk.Frame(left)
+        share.pack(fill="x")
+        ttk.Button(share, text="Export", command=self._export_macro).pack(side="left", expand=True, fill="x")
+        ttk.Button(share, text="Import", command=self._import_macro).pack(side="left", expand=True, fill="x")
 
         # Right: details
         right = ttk.Frame(root)
@@ -117,6 +126,7 @@ class MacroApp(tk.Tk):
         self.events_label.pack(side="left", padx=10)
         self.capture_moves = tk.BooleanVar(value=False)
         ttk.Checkbutton(rec, text="Capture mouse movement", variable=self.capture_moves).pack(side="left", padx=10)
+        ttk.Button(rec, text="Edit steps…", command=self._edit_steps).pack(side="left", padx=4)
         ttk.Label(rec, text="(F9 stops recording)").pack(side="right")
 
         # Image
@@ -156,6 +166,18 @@ class MacroApp(tk.Tk):
         self.threshold_label.pack(side="left")
         self.threshold_scale.set(80)
 
+        # Run options: global hotkey + playback speed
+        opts = ttk.LabelFrame(right, text="Run options", padding=8)
+        opts.pack(fill="x", pady=4)
+        ttk.Label(opts, text="Start hotkey").pack(side="left")
+        self.hotkey_var = tk.StringVar(value="none")
+        ttk.Label(opts, textvariable=self.hotkey_var, width=20, relief="sunken", anchor="center").pack(side="left", padx=4)
+        ttk.Button(opts, text="Set", command=self._set_hotkey).pack(side="left", padx=2)
+        ttk.Button(opts, text="Clear", command=self._clear_hotkey).pack(side="left", padx=2)
+        ttk.Label(opts, text="Speed ×").pack(side="left", padx=(14, 2))
+        self.speed_var = tk.StringVar(value="1.0")
+        ttk.Spinbox(opts, from_=0.1, to=10, increment=0.1, width=6, textvariable=self.speed_var).pack(side="left")
+
         # Playback
         play = ttk.LabelFrame(right, text="Playback", padding=8)
         play.pack(fill="x", pady=4)
@@ -180,7 +202,8 @@ class MacroApp(tk.Tk):
         self.listbox.delete(0, "end")
         for m in self.macros:
             tag = "🖼" if m.has_image else "  "
-            self.listbox.insert("end", f"{tag} {m.name}  ({len(m.events)})")
+            hk = f"  [{m.hotkey}]" if m.hotkey else ""
+            self.listbox.insert("end", f"{tag} {m.name}  ({len(m.events)}){hk}")
 
     def _selected_index(self) -> Optional[int]:
         sel = self.listbox.curselection()
@@ -202,6 +225,8 @@ class MacroApp(tk.Tk):
         self.mode_var.set(LABEL_BY_MODE.get(m.match_mode, list(MATCH_LABELS.keys())[0]))
         self.threshold_scale.set(int(m.threshold * 100))
         self.threshold_label.config(text=f"{int(m.threshold * 100)}%")
+        self.hotkey_var.set(m.hotkey or "none")
+        self.speed_var.set(str(m.speed))
         self._current_image = self.storage.load_image(m)
         self._show_thumb(self._current_image)
 
@@ -243,6 +268,10 @@ class MacroApp(tk.Tk):
             m.loop_delay = max(0.0, float(self.delay_var.get()))
         except ValueError:
             m.loop_delay = 0.5
+        try:
+            m.speed = max(0.1, float(self.speed_var.get()))
+        except ValueError:
+            m.speed = 1.0
 
     def _new_macro(self):
         self._commit_current()
@@ -266,6 +295,7 @@ class MacroApp(tk.Tk):
         self.current = None
         self._refresh_list()
         self._save()
+        self._refresh_hotkeys()
         if self.macros:
             self.listbox.selection_set(min(idx, len(self.macros) - 1))
             self._on_select()
@@ -281,6 +311,7 @@ class MacroApp(tk.Tk):
         if not self.current:
             self._new_macro()
         self.recorder.capture_moves = self.capture_moves.get()
+        self.hotkeys.pause()  # don't trigger macros from keys being recorded
         self.record_btn.config(text="■ Stop recording")
         self._set_status("Recording… press F9 to stop")
         self.recorder.start(on_stop=lambda: self.after(0, self._finish_record))
@@ -295,6 +326,7 @@ class MacroApp(tk.Tk):
             self._refresh_list_preserve()
             self._save()
         self.record_btn.config(text="● Record")
+        self.hotkeys.resume()
         self._set_status(f"Recorded {len(events)} events")
 
     # ---------------------------------------------------------------- images
@@ -380,6 +412,7 @@ class MacroApp(tk.Tk):
             template=self._current_image,
             threshold=m.threshold,
             wait_timeout=m.wait_timeout,
+            speed=m.speed,
             on_status=lambda s: self.after(0, self._set_status, s),
             on_finished=lambda: self.after(0, self._on_play_finished),
         )
@@ -390,6 +423,154 @@ class MacroApp(tk.Tk):
     def _on_play_finished(self):
         self.play_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
+
+    # ----------------------------------------------------------- step editor
+    def _edit_steps(self):
+        if not self.current:
+            return
+        if self.recorder.recording:
+            messagebox.showinfo("Edit steps", "Stop recording first.")
+            return
+
+        def on_save(events):
+            self.current.events = events
+            self.events_label.config(text=f"{len(events)} events")
+            self._refresh_list_preserve()
+            self._save()
+            self._set_status(f"Saved {len(events)} steps")
+
+        EventEditor(self, self.current.events, on_save)
+
+    # --------------------------------------------------------- global hotkeys
+    def _set_hotkey(self):
+        if not self.current:
+            self._new_macro()
+        self.hotkeys.pause()  # don't let the manager swallow keys while capturing
+
+        def on_done(combo):
+            self.hotkeys.resume()
+            if combo is None:
+                return
+            # Prevent two macros sharing the same combo.
+            for m in self.macros:
+                if m is not self.current and m.hotkey == combo:
+                    messagebox.showwarning("Hotkey in use", f"{combo} is already used by '{m.name}'.")
+                    return
+            self.current.hotkey = combo
+            self.hotkey_var.set(combo)
+            self._refresh_list_preserve()
+            self._save()
+            self._refresh_hotkeys()
+            self._set_status(f"Hotkey set to {combo}")
+
+        HotkeyCapture(self, on_done)
+
+    def _clear_hotkey(self):
+        if self.current:
+            self.current.hotkey = ""
+            self.hotkey_var.set("none")
+            self._refresh_list_preserve()
+            self._save()
+            self._refresh_hotkeys()
+
+    def _refresh_hotkeys(self):
+        mapping = {}
+        for m in self.macros:
+            if m.hotkey:
+                mapping[m.hotkey] = self._make_hotkey_callback(m.id)
+        self.hotkeys.set_bindings(mapping)
+
+    def _make_hotkey_callback(self, macro_id: str):
+        # Hotkeys fire on the listener thread; bounce to the Tk thread.
+        return lambda: self.after(0, self._toggle_macro_by_id, macro_id)
+
+    def _toggle_macro_by_id(self, macro_id: str):
+        # Same hotkey starts the macro, or stops it if it's already running.
+        if self.player.running:
+            self.player.stop()
+            return
+        idx = next((i for i, m in enumerate(self.macros) if m.id == macro_id), None)
+        if idx is None:
+            return
+        self.listbox.selection_clear(0, "end")
+        self.listbox.selection_set(idx)
+        self._on_select()
+        self._play()
+
+    # --------------------------------------------------------- export/import
+    def _export_macro(self):
+        if not self.current:
+            messagebox.showinfo("Export", "Select a macro to export.")
+            return
+        self._commit_current()
+        code = encode_macro(self.current, self._current_image)
+        self.clipboard_clear()
+        self.clipboard_append(code)
+        self._show_code_dialog(
+            "Export macro",
+            f"Share code for '{self.current.name}' (copied to clipboard):",
+            code, readonly=True,
+        )
+        self._set_status("Share code copied to clipboard")
+
+    def _import_macro(self):
+        self._show_code_dialog(
+            "Import macro",
+            "Paste a macro share code below, then click Import:",
+            "", readonly=False, on_import=self._do_import,
+        )
+
+    def _do_import(self, code: str):
+        try:
+            macro, image = decode_macro(code)
+        except ValueError as exc:
+            messagebox.showerror("Import failed", str(exc))
+            return
+        self._commit_current()
+        self.macros.append(macro)
+        if image is not None:
+            self.storage.save_image(macro, image)
+        self._refresh_list()
+        self.listbox.selection_clear(0, "end")
+        self.listbox.selection_set("end")
+        self._on_select()
+        self._save()
+        self._set_status(f"Imported macro '{macro.name}'")
+
+    def _show_code_dialog(self, title, label, text, readonly, on_import=None):
+        dlg = tk.Toplevel(self)
+        dlg.title(title)
+        dlg.geometry("520x260")
+        dlg.transient(self)
+        ttk.Label(dlg, text=label, padding=8, wraplength=500).pack(anchor="w")
+        box = tk.Text(dlg, height=8, wrap="char")
+        box.pack(fill="both", expand=True, padx=8)
+        box.insert("1.0", text)
+        if readonly:
+            box.config(state="disabled")
+        bar = ttk.Frame(dlg, padding=8)
+        bar.pack(fill="x")
+        if on_import:
+            def do():
+                on_import(box.get("1.0", "end"))
+                dlg.destroy()
+            ttk.Button(bar, text="Paste from clipboard", command=lambda: self._paste_into(box)).pack(side="left")
+            ttk.Button(bar, text="Import", command=do).pack(side="right")
+        else:
+            ttk.Button(bar, text="Copy again", command=lambda: self._copy_text(text)).pack(side="left")
+        ttk.Button(bar, text="Close", command=dlg.destroy).pack(side="right", padx=4)
+
+    def _paste_into(self, box):
+        try:
+            box.delete("1.0", "end")
+            box.insert("1.0", self.clipboard_get())
+        except Exception:
+            pass
+
+    def _copy_text(self, text):
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self._set_status("Copied to clipboard")
 
     # ---------------------------------------------------------------- common
     def _set_status(self, text: str):
@@ -403,6 +584,7 @@ class MacroApp(tk.Tk):
         if self.recorder.recording:
             self.recorder.stop()
         self.player.stop()
+        self.hotkeys.stop()
         self._save()
         self.destroy()
 

@@ -31,6 +31,8 @@ class Macro:
     threshold: float = 0.8
     wait_timeout: float = 30.0
     has_image: bool = False
+    hotkey: str = ""                    # global start hotkey, e.g. "<ctrl>+<alt>+1"
+    speed: float = 1.0                  # playback speed multiplier (delays divided by this)
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
     def to_dict(self) -> dict:

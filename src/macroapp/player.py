@@ -48,6 +48,7 @@ class MacroPlayer:
         template=None,
         threshold: float = 0.8,
         wait_timeout: float = 30.0,
+        speed: float = 1.0,
         on_status: Optional[Callable[[str], None]] = None,
         on_finished: Optional[Callable[[], None]] = None,
     ) -> None:
@@ -95,7 +96,7 @@ class MacroPlayer:
                             break
                         continue
 
-                    self._play_once(events)
+                    self._play_once(events, speed)
                     if self._sleep(loop_delay):
                         break
 
@@ -112,13 +113,14 @@ class MacroPlayer:
         self._stop.set()
 
     # -------------------------------------------------------------- internals
-    def _play_once(self, events: List[dict]) -> None:
+    def _play_once(self, events: List[dict], speed: float = 1.0) -> None:
+        speed = speed if speed and speed > 0 else 1.0
         last_t = 0.0
         for ev in events:
             if self._stop.is_set():
                 return
-            # Reproduce original gaps between events.
-            gap = ev.get("t", last_t) - last_t
+            # Reproduce original gaps between events, scaled by playback speed.
+            gap = (ev.get("t", last_t) - last_t) / speed
             if gap > 0:
                 if self._sleep(min(gap, 5.0)):  # cap absurd gaps
                     return

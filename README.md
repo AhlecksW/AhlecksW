@@ -20,20 +20,32 @@ similarity threshold).
   screenshot) or **Paste image** from the clipboard.
 - **Match %** slider (default **80%**) and a **Test match** button that reports the
   current best similarity so you can tune the threshold.
+- **Global hotkeys** — assign a system-wide start hotkey to a macro (click **Set**
+  and press the combo, e.g. `Ctrl+Alt+1`). Pressing it starts the macro from
+  anywhere — even when the window isn't focused — and pressing it again (or **F9**)
+  stops it.
+- **Step editor** — click **Edit steps…** to see every recorded action, the delay
+  before it, and its details. Double-click a delay to retime that step (the rest
+  shifts to follow), delete steps, or **Scale all delays ×** to speed up / slow
+  down the whole macro. A **Speed ×** field also scales timing at playback.
+- **Share codes** — **Export** turns a macro (image included) into one copy-paste
+  code on your clipboard; **Import** recreates it from a pasted code, so you can
+  send a macro to someone else to use.
 - **Macro list** — scroll, select, rename, create, and delete saved macros. Macros
   persist in a `data/` folder next to the program.
 
 ## UI overview
 
 ```
-+-----------------+-------------------------------------------------+
-|  Macros         |  Name: [______________________]                 |
-|  🖼 Login bot   |  Record:  [● Record]   12 events   F9 stops     |
-|    Farm loop    |  Image:   [thumb] [Crop][Paste][Clear][Test]    |
-|    ...          |           Mode: Run only if image is on screen  |
-|                 |           Match %: ====[80%]====                 |
-|  [New][Delete]  |  Playback: Repeat [0] Delay [0.5] [▶ Play][■]   |
-+-----------------+-------------------------------------------------+
++----------------------+--------------------------------------------------+
+|  Macros              |  Name: [______________________]                  |
+|  🖼 Login bot [C-A-1]|  Record: [● Record] 12 events [Edit steps…]      |
+|    Farm loop         |  Image:  [thumb] [Crop][Paste][Clear][Test]      |
+|    ...               |          Mode: Run only if image is on screen    |
+|                      |          Match %: ====[80%]====                   |
+|  [New]   [Delete]    |  Run opts: hotkey [Ctrl+Alt+1][Set] Speed ×[1.0] |
+|  [Export][Import]    |  Playback: Repeat [0] Delay [0.5] [▶ Play][■]    |
++----------------------+--------------------------------------------------+
   status: Best similarity 87.3% at (640, 360) — MATCH (need 80%)
 ```
 
@@ -68,11 +80,24 @@ build.bat                # one-click Windows build
 src/macroapp/
     app.py               # Tkinter UI
     recorder.py          # captures mouse/keyboard -> events
-    player.py            # replays events, image-trigger gating
+    player.py            # replays events, image-trigger gating, speed
     matcher.py           # OpenCV screen template matching
     cropper.py           # drag-a-box screen crop tool
+    editor.py            # step/timing editor window
+    hotkeys.py           # global hotkey manager + capture dialog
+    share.py             # export/import macro share codes
     storage.py           # JSON + PNG persistence
 ```
+
+## Sharing a macro
+
+1. Select a macro and click **Export** — the share code is copied to your
+   clipboard (and shown in a box). It includes the macro's actions, timing,
+   settings, and its trigger image.
+2. Send that code to someone (chat, email, a text file — it's just text).
+3. They click **Import**, paste the code, and click **Import**. The macro shows
+   up in their list ready to use. Hotkeys aren't shared, so each person sets
+   their own.
 
 ## How image matching works
 
