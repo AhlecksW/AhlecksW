@@ -31,6 +31,15 @@ similarity threshold).
 - **Share codes** — **Export** turns a macro (image included) into one copy-paste
   code on your clipboard; **Import** recreates it from a pasted code, so you can
   send a macro to someone else to use.
+- **Routines (image-triggered chains)** — chain macros together with images on the
+  **Routines** tab: each step is "wait for *this* image → play *that* macro." Run
+  styles:
+  - *Sequence (in order)* — wait for image A → run macro 1, wait for image B →
+    run macro 2, … then loop. Exactly the "see A, do this, then see B, do that" flow.
+  - *Reactive (watch & react)* — continuously watch every step's image and run
+    whichever macro's image is currently on screen.
+  - Per-step *Repeat until next image* — keep running a step's macro **until the
+    next step's image appears**, then move on (the "do this *until* you see that").
 - **Macro list** — scroll, select, rename, create, and delete saved macros. Macros
   persist in a `data/` folder next to the program.
 
@@ -86,7 +95,34 @@ src/macroapp/
     editor.py            # step/timing editor window
     hotkeys.py           # global hotkey manager + capture dialog
     share.py             # export/import macro share codes
-    storage.py           # JSON + PNG persistence
+    storage.py           # JSON + PNG persistence (macros + routines)
+```
+
+## Routines: chaining macros with images
+
+A **routine** strings macros together using on-screen images as triggers. Build
+one on the **Routines** tab:
+
+1. Click **New** to create a routine, then **Add** to add a step.
+2. For each step: give it a **trigger image** (Crop or Paste), and pick which
+   **macro** to play when that image is seen.
+3. Set the step's **After** behavior:
+   - *Run once, then next* — play the macro one time, then move to the next step.
+   - *Repeat until next image* — keep playing the macro until the **next** step's
+     image appears, then advance.
+4. Choose the routine **Mode**:
+   - *Sequence (in order)* — works top-to-bottom: wait for step 1's image, run it,
+     wait for step 2's image, run it, … then loop (Repeat `0` = forever).
+   - *Reactive (watch & react)* — every scan, run whichever step's image is on
+     screen right now (top step wins ties).
+5. Press **▶ Play routine** (or assign the routine its own global start hotkey).
+
+Example — *fish until a bite, then reel, repeat*:
+
+```
+Routine "Fishing"  ·  Mode: Sequence  ·  Repeat: 0 (forever)
+  Step 1  image=[cast button]  macro=Cast       After: Run once, then next
+  Step 2  image=[!  bite icon]  macro=ReelIn     After: Run once, then next
 ```
 
 ## Sharing a macro

@@ -109,6 +109,104 @@ class MacroPlayer:
         self._thread = threading.Thread(target=worker, daemon=True)
         self._thread.start()
 
+    def play_routine(
+        self,
+        steps: List[dict],
+        mode: str = "sequence",
+        repeat: int = 0,
+        scan_interval: float = 0.4,
+        wait_timeout: float = 60.0,
+        on_status: Optional[Callable[[str], None]] = None,
+        on_finished: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """Run a chain of image-triggered macro steps.
+
+        Each step is a dict: ``{"name", "template", "threshold", "events",
+        "after"}`` where ``after`` is ``"once"`` or ``"repeat_until_next"``.
+        ``mode`` is ``"sequence"`` (wait for each image in order) or
+        ``"reactive"`` (watch every image and run whichever is seen).
+        """
+        if self.running:
+            return
+        self._stop.clear()
+        steps = [s for s in steps if s.get("template") is not None and s.get("events") is not None]
+
+        def status(msg: str) -> None:
+            if on_status:
+                on_status(msg)
+
+        def worker():
+            self._start_hotkey()
+            try:
+                if not steps:
+                    status("Routine has no usable steps (need an image and a macro)")
+                    return
+                if mode == "reactive":
+                    self._run_reactive(steps, repeat, scan_interval, status)
+                else:
+                    self._run_sequence(steps, repeat, scan_interval, wait_timeout, status)
+                status("Stopped" if self._stop.is_set() else "Routine finished")
+            finally:
+                self._stop_hotkey()
+                if on_finished:
+                    on_finished()
+
+        self._thread = threading.Thread(target=worker, daemon=True)
+        self._thread.start()
+
+    def _run_sequence(self, steps, repeat, scan_interval, wait_timeout, status):
+        loop = 0
+        while not self._stop.is_set():
+            if repeat and loop >= repeat:
+                break
+            loop += 1
+            label = f"{loop}/{repeat}" if repeat else f"{loop}/∞"
+            for i, step in enumerate(steps):
+                if self._stop.is_set():
+                    return
+                name = step.get("name", f"step {i + 1}")
+                status(f"Routine {label}: waiting for '{name}' image…")
+                if not self._wait_for_image(step["template"], step["threshold"], wait_timeout):
+                    status(f"Routine {label}: '{name}' image not found within {wait_timeout:.0f}s")
+                    return
+                # 'repeat_until_next' keeps running this macro until the *next*
+                # step's image shows up — your "do this until you see that".
+                if step.get("after") == "repeat_until_next" and i + 1 < len(steps):
+                    nxt = steps[i + 1]
+                    status(f"Routine {label}: running '{name}' until next image…")
+                    while not self._stop.is_set():
+                        if self.matcher.find(nxt["template"], nxt["threshold"])[0]:
+                            break
+                        self._play_once(step["events"])
+                        if self._sleep(scan_interval):
+                            return
+                else:
+                    status(f"Routine {label}: running '{name}'")
+                    self._play_once(step["events"])
+                    if self._sleep(scan_interval):
+                        return
+
+    def _run_reactive(self, steps, repeat, scan_interval, status):
+        acted = 0
+        while not self._stop.is_set():
+            if repeat and acted >= repeat:
+                break
+            matched = False
+            for i, step in enumerate(steps):
+                if self._stop.is_set():
+                    return
+                if self.matcher.find(step["template"], step["threshold"])[0]:
+                    acted += 1
+                    name = step.get("name", f"step {i + 1}")
+                    status(f"Reactive: saw '{name}' → running ({acted}{'/' + str(repeat) if repeat else ''})")
+                    self._play_once(step["events"])
+                    matched = True
+                    break  # rescan from the top after acting
+            if not matched:
+                status("Reactive: watching for trigger images…")
+            if self._sleep(scan_interval):
+                return
+
     def stop(self) -> None:
         self._stop.set()
 

@@ -34,7 +34,12 @@ from .player import (
 )
 from .recorder import MacroRecorder
 from .share import decode_macro, encode_macro
-from .storage import Macro, Storage
+from .storage import Macro, Routine, Storage, new_step
+
+ROUTINE_MODES = {"Sequence (in order)": "sequence", "Reactive (watch & react)": "reactive"}
+MODE_LABELS = {v: k for k, v in ROUTINE_MODES.items()}
+AFTER_LABELS = {"Run once, then next": "once", "Repeat until next image": "repeat_until_next"}
+AFTER_BY_VALUE = {v: k for k, v in AFTER_LABELS.items()}
 
 MATCH_LABELS = {
     "No image (just replay actions)": MATCH_NONE,
@@ -74,18 +79,35 @@ class MacroApp(tk.Tk):
         self._current_image: Optional[Image.Image] = None
         self._thumb: Optional[ImageTk.PhotoImage] = None
 
+        # Routines (image-triggered chains of macros)
+        self.routines: List[Routine] = self.storage.load_routines()
+        self.current_routine: Optional[Routine] = None
+        self.current_step: Optional[dict] = None
+        self._step_thumb: Optional[ImageTk.PhotoImage] = None
+
         self._build_ui()
         self._refresh_list()
         if self.macros:
             self.listbox.selection_set(0)
             self._on_select()
+        self._refresh_routine_list()
+        if self.routines:
+            self.routine_listbox.selection_set(0)
+            self._on_routine_select()
         self._refresh_hotkeys()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ----------------------------------------------------------------- build
     def _build_ui(self):
-        root = ttk.Frame(self, padding=8)
-        root.pack(fill="both", expand=True)
+        self.nb = ttk.Notebook(self)
+        self.nb.pack(fill="both", expand=True)
+
+        macros_tab = ttk.Frame(self.nb, padding=8)
+        self.nb.add(macros_tab, text="Macros")
+        routines_tab = ttk.Frame(self.nb, padding=8)
+        self.nb.add(routines_tab, text="Routines")
+
+        root = macros_tab
 
         # Left: macro list
         left = ttk.Frame(root)
@@ -192,10 +214,118 @@ class MacroApp(tk.Tk):
         self.stop_btn = ttk.Button(play, text="■ Stop", command=self._stop, state="disabled")
         self.stop_btn.pack(side="left", padx=2)
 
+        self._build_routines_tab(routines_tab)
+
         # Status bar
         self.status_var = tk.StringVar(value="Ready")
         status = ttk.Label(self, textvariable=self.status_var, relief="sunken", anchor="w", padding=4)
         status.pack(fill="x", side="bottom")
+
+    # --------------------------------------------------------- routines tab
+    def _build_routines_tab(self, root):
+        # Left: routine list
+        left = ttk.Frame(root)
+        left.pack(side="left", fill="y", padx=(0, 8))
+        ttk.Label(left, text="Routines", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        self.routine_listbox = tk.Listbox(left, width=26, height=18, exportselection=False)
+        self.routine_listbox.pack(fill="y", expand=True)
+        self.routine_listbox.bind("<<ListboxSelect>>", lambda _e: self._on_routine_select())
+        rb = ttk.Frame(left)
+        rb.pack(fill="x", pady=4)
+        ttk.Button(rb, text="New", command=self._new_routine).pack(side="left", expand=True, fill="x")
+        ttk.Button(rb, text="Delete", command=self._delete_routine).pack(side="left", expand=True, fill="x")
+        rp = ttk.Frame(left)
+        rp.pack(fill="x")
+        self.routine_play_btn = ttk.Button(rp, text="▶ Play routine", command=self._play_routine)
+        self.routine_play_btn.pack(side="left", expand=True, fill="x")
+        self.routine_stop_btn = ttk.Button(rp, text="■ Stop", command=self._stop, state="disabled")
+        self.routine_stop_btn.pack(side="left", expand=True, fill="x")
+
+        # Right: routine details
+        right = ttk.Frame(root)
+        right.pack(side="left", fill="both", expand=True)
+
+        name_row = ttk.Frame(right)
+        name_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(name_row, text="Name", width=8).pack(side="left")
+        self.routine_name_var = tk.StringVar()
+        e = ttk.Entry(name_row, textvariable=self.routine_name_var)
+        e.pack(side="left", fill="x", expand=True)
+        e.bind("<FocusOut>", lambda _e: self._routine_apply_name())
+        e.bind("<Return>", lambda _e: self._routine_apply_name())
+
+        cfg = ttk.Frame(right)
+        cfg.pack(fill="x", pady=2)
+        ttk.Label(cfg, text="Mode").pack(side="left")
+        self.routine_mode_var = tk.StringVar(value=list(ROUTINE_MODES.keys())[0])
+        ttk.Combobox(cfg, textvariable=self.routine_mode_var, values=list(ROUTINE_MODES.keys()),
+                     state="readonly", width=22).pack(side="left", padx=4)
+        ttk.Label(cfg, text="Repeat (0=∞)").pack(side="left", padx=(10, 0))
+        self.routine_repeat_var = tk.StringVar(value="0")
+        ttk.Spinbox(cfg, from_=0, to=999999, width=7, textvariable=self.routine_repeat_var).pack(side="left", padx=4)
+        ttk.Label(cfg, text="Scan (s)").pack(side="left")
+        self.routine_scan_var = tk.StringVar(value="0.4")
+        ttk.Spinbox(cfg, from_=0.05, to=10, increment=0.05, width=5, textvariable=self.routine_scan_var).pack(side="left", padx=4)
+
+        hk = ttk.Frame(right)
+        hk.pack(fill="x", pady=2)
+        ttk.Label(hk, text="Start hotkey").pack(side="left")
+        self.routine_hotkey_var = tk.StringVar(value="none")
+        ttk.Label(hk, textvariable=self.routine_hotkey_var, width=18, relief="sunken", anchor="center").pack(side="left", padx=4)
+        ttk.Button(hk, text="Set", command=self._set_routine_hotkey).pack(side="left", padx=2)
+        ttk.Button(hk, text="Clear", command=self._clear_routine_hotkey).pack(side="left", padx=2)
+
+        # Steps table
+        steps_frame = ttk.LabelFrame(right, text="Steps (image → macro, top to bottom)", padding=6)
+        steps_frame.pack(fill="both", expand=True, pady=4)
+        cols = ("num", "img", "macro", "after")
+        self.steps_tree = ttk.Treeview(steps_frame, columns=cols, show="headings", height=6, selectmode="browse")
+        for c, txt, w in [("num", "#", 34), ("img", "Image", 56), ("macro", "Macro", 160), ("after", "After", 150)]:
+            self.steps_tree.heading(c, text=txt)
+            self.steps_tree.column(c, width=w, anchor="w" if c in ("macro", "after") else "center")
+        self.steps_tree.pack(side="left", fill="both", expand=True)
+        self.steps_tree.bind("<<TreeviewSelect>>", lambda _e: self._on_step_select())
+        sbtn = ttk.Frame(steps_frame)
+        sbtn.pack(side="left", fill="y", padx=4)
+        ttk.Button(sbtn, text="Add", width=8, command=self._add_step).pack(pady=1)
+        ttk.Button(sbtn, text="Remove", width=8, command=self._remove_step).pack(pady=1)
+        ttk.Button(sbtn, text="↑", width=8, command=lambda: self._move_step(-1)).pack(pady=1)
+        ttk.Button(sbtn, text="↓", width=8, command=lambda: self._move_step(1)).pack(pady=1)
+
+        # Selected-step editor
+        se = ttk.LabelFrame(right, text="Selected step", padding=6)
+        se.pack(fill="x", pady=4)
+        r1 = ttk.Frame(se)
+        r1.pack(fill="x")
+        self.step_thumb = ttk.Label(r1, text="No image", relief="sunken", width=16, anchor="center")
+        self.step_thumb.pack(side="left", padx=(0, 8))
+        sc = ttk.Frame(r1)
+        sc.pack(side="left", fill="x", expand=True)
+        b = ttk.Frame(sc)
+        b.pack(fill="x")
+        ttk.Button(b, text="Crop", command=self._step_crop_image).pack(side="left", padx=1)
+        ttk.Button(b, text="Paste", command=self._step_paste_image).pack(side="left", padx=1)
+        ttk.Button(b, text="Clear", command=self._step_clear_image).pack(side="left", padx=1)
+        ttk.Button(b, text="Test", command=self._step_test_match).pack(side="left", padx=1)
+        m = ttk.Frame(sc)
+        m.pack(fill="x", pady=(4, 0))
+        ttk.Label(m, text="Play macro").pack(side="left")
+        self.step_macro_var = tk.StringVar()
+        self.step_macro_combo = ttk.Combobox(m, textvariable=self.step_macro_var, state="readonly", width=20)
+        self.step_macro_combo.pack(side="left", padx=4)
+        self.step_macro_combo.bind("<<ComboboxSelected>>", lambda _e: self._apply_step_fields())
+        a = ttk.Frame(sc)
+        a.pack(fill="x", pady=(4, 0))
+        ttk.Label(a, text="After").pack(side="left")
+        self.step_after_var = tk.StringVar(value=list(AFTER_LABELS.keys())[0])
+        ac = ttk.Combobox(a, textvariable=self.step_after_var, values=list(AFTER_LABELS.keys()),
+                          state="readonly", width=22)
+        ac.pack(side="left", padx=4)
+        ac.bind("<<ComboboxSelected>>", lambda _e: self._apply_step_fields())
+        ttk.Label(a, text="Match %").pack(side="left", padx=(10, 0))
+        self.step_thresh_var = tk.IntVar(value=80)
+        ttk.Spinbox(a, from_=50, to=100, width=5, textvariable=self.step_thresh_var,
+                    command=self._apply_step_fields).pack(side="left", padx=4)
 
     # --------------------------------------------------------- list handling
     def _refresh_list(self):
@@ -402,8 +532,7 @@ class MacroApp(tk.Tk):
         self._save()
         m = self.current
 
-        self.play_btn.config(state="disabled")
-        self.stop_btn.config(state="normal")
+        self._set_running(True)
         self.player.play(
             events=m.events,
             repeat=m.repeat,
@@ -420,9 +549,16 @@ class MacroApp(tk.Tk):
     def _stop(self):
         self.player.stop()
 
+    def _set_running(self, running: bool):
+        pstate = "disabled" if running else "normal"
+        sstate = "normal" if running else "disabled"
+        for w in (self.play_btn, self.routine_play_btn):
+            w.config(state=pstate)
+        for w in (self.stop_btn, self.routine_stop_btn):
+            w.config(state=sstate)
+
     def _on_play_finished(self):
-        self.play_btn.config(state="normal")
-        self.stop_btn.config(state="disabled")
+        self._set_running(False)
 
     # ----------------------------------------------------------- step editor
     def _edit_steps(self):
@@ -451,11 +587,10 @@ class MacroApp(tk.Tk):
             self.hotkeys.resume()
             if combo is None:
                 return
-            # Prevent two macros sharing the same combo.
-            for m in self.macros:
-                if m is not self.current and m.hotkey == combo:
-                    messagebox.showwarning("Hotkey in use", f"{combo} is already used by '{m.name}'.")
-                    return
+            owner = self._hotkey_owner(combo, exclude_macro=self.current)
+            if owner:
+                messagebox.showwarning("Hotkey in use", f"{combo} is already used by '{owner}'.")
+                return
             self.current.hotkey = combo
             self.hotkey_var.set(combo)
             self._refresh_list_preserve()
@@ -478,7 +613,20 @@ class MacroApp(tk.Tk):
         for m in self.macros:
             if m.hotkey:
                 mapping[m.hotkey] = self._make_hotkey_callback(m.id)
+        for r in self.routines:
+            if r.hotkey:
+                mapping[r.hotkey] = self._make_routine_hotkey_callback(r.id)
         self.hotkeys.set_bindings(mapping)
+
+    def _hotkey_owner(self, combo: str, exclude_macro=None, exclude_routine=None) -> Optional[str]:
+        """Return the name of whatever already uses ``combo``, else None."""
+        for m in self.macros:
+            if m is not exclude_macro and m.hotkey == combo:
+                return m.name
+        for r in self.routines:
+            if r is not exclude_routine and r.hotkey == combo:
+                return f"routine '{r.name}'"
+        return None
 
     def _make_hotkey_callback(self, macro_id: str):
         # Hotkeys fire on the listener thread; bounce to the Tk thread.
@@ -572,6 +720,360 @@ class MacroApp(tk.Tk):
         self.clipboard_append(text)
         self._set_status("Copied to clipboard")
 
+    # ========================================================== ROUTINES =====
+    def _macro_label(self, m: Macro) -> str:
+        return f"{m.name}  ·{m.id[:4]}"
+
+    def _update_step_macro_combo(self):
+        self._macro_by_label = {self._macro_label(m): m.id for m in self.macros}
+        self.step_macro_combo["values"] = list(self._macro_by_label.keys())
+
+    def _label_for_macro_id(self, macro_id: str) -> str:
+        for m in self.macros:
+            if m.id == macro_id:
+                return self._macro_label(m)
+        return ""
+
+    # ---------------------------------------------------------- routine list
+    def _refresh_routine_list(self):
+        self.routine_listbox.delete(0, "end")
+        for r in self.routines:
+            hk = f"  [{r.hotkey}]" if r.hotkey else ""
+            self.routine_listbox.insert("end", f"{r.name}  ({len(r.steps)} steps){hk}")
+
+    def _selected_routine_index(self) -> Optional[int]:
+        sel = self.routine_listbox.curselection()
+        return sel[0] if sel else None
+
+    def _on_routine_select(self):
+        idx = self._selected_routine_index()
+        if idx is None:
+            return
+        self._commit_current_routine()
+        self.current_routine = self.routines[idx]
+        self.current_step = None
+        self._load_routine_into_form(self.current_routine)
+
+    def _load_routine_into_form(self, r: Routine):
+        self.routine_name_var.set(r.name)
+        self.routine_mode_var.set(MODE_LABELS.get(r.mode, list(ROUTINE_MODES.keys())[0]))
+        self.routine_repeat_var.set(str(r.repeat))
+        self.routine_scan_var.set(str(r.scan_interval))
+        self.routine_hotkey_var.set(r.hotkey or "none")
+        self._update_step_macro_combo()
+        self._reload_steps_tree()
+        self._show_step_thumb(None)
+
+    def _commit_current_routine(self):
+        r = self.current_routine
+        if not r:
+            return
+        r.name = self.routine_name_var.get().strip() or "Untitled"
+        r.mode = ROUTINE_MODES.get(self.routine_mode_var.get(), "sequence")
+        try:
+            r.repeat = max(0, int(float(self.routine_repeat_var.get())))
+        except ValueError:
+            r.repeat = 0
+        try:
+            r.scan_interval = max(0.05, float(self.routine_scan_var.get()))
+        except ValueError:
+            r.scan_interval = 0.4
+
+    def _routine_apply_name(self):
+        if self.current_routine:
+            self.current_routine.name = self.routine_name_var.get().strip() or "Untitled"
+            self._refresh_routine_list_preserve()
+
+    def _refresh_routine_list_preserve(self):
+        idx = self._selected_routine_index()
+        self._refresh_routine_list()
+        if idx is not None and idx < len(self.routines):
+            self.routine_listbox.selection_set(idx)
+
+    def _new_routine(self):
+        self._commit_current_routine()
+        r = Routine(name=f"Routine {len(self.routines) + 1}")
+        self.routines.append(r)
+        self._refresh_routine_list()
+        self.routine_listbox.selection_clear(0, "end")
+        self.routine_listbox.selection_set("end")
+        self._on_routine_select()
+        self._save_routines()
+
+    def _delete_routine(self):
+        idx = self._selected_routine_index()
+        if idx is None:
+            return
+        r = self.routines[idx]
+        if not messagebox.askyesno("Delete", f"Delete routine '{r.name}'?"):
+            return
+        for step in r.steps:
+            self.storage.delete_step_image(step)
+        del self.routines[idx]
+        self.current_routine = None
+        self.current_step = None
+        self._refresh_routine_list()
+        self._save_routines()
+        self._refresh_hotkeys()
+        if self.routines:
+            self.routine_listbox.selection_set(min(idx, len(self.routines) - 1))
+            self._on_routine_select()
+
+    # ---------------------------------------------------------- steps table
+    def _reload_steps_tree(self):
+        self.steps_tree.delete(*self.steps_tree.get_children())
+        if not self.current_routine:
+            return
+        for i, step in enumerate(self.current_routine.steps):
+            macro_name = self._label_for_macro_id(step.get("macro_id", "")) or "— none —"
+            img = "✓" if step.get("has_image") else "✗"
+            after = AFTER_BY_VALUE.get(step.get("after", "once"), "once")
+            self.steps_tree.insert("", "end", iid=step["id"],
+                                   values=(i + 1, img, macro_name, after))
+
+    def _add_step(self):
+        if not self.current_routine:
+            self._new_routine()
+        step = new_step()
+        self.current_routine.steps.append(step)
+        self._reload_steps_tree()
+        self.steps_tree.selection_set(step["id"])
+        self._on_step_select()
+        self._save_routines()
+        self._refresh_routine_list_preserve()
+
+    def _remove_step(self):
+        sel = self.steps_tree.selection()
+        if not sel or not self.current_routine:
+            return
+        sid = sel[0]
+        step = next((s for s in self.current_routine.steps if s["id"] == sid), None)
+        if step:
+            self.storage.delete_step_image(step)
+            self.current_routine.steps.remove(step)
+        self.current_step = None
+        self._reload_steps_tree()
+        self._show_step_thumb(None)
+        self._save_routines()
+        self._refresh_routine_list_preserve()
+
+    def _move_step(self, delta: int):
+        sel = self.steps_tree.selection()
+        if not sel or not self.current_routine:
+            return
+        steps = self.current_routine.steps
+        idx = next((i for i, s in enumerate(steps) if s["id"] == sel[0]), None)
+        if idx is None:
+            return
+        new = idx + delta
+        if not (0 <= new < len(steps)):
+            return
+        steps[idx], steps[new] = steps[new], steps[idx]
+        self._reload_steps_tree()
+        self.steps_tree.selection_set(sel[0])
+        self._save_routines()
+
+    def _selected_step(self) -> Optional[dict]:
+        sel = self.steps_tree.selection()
+        if not sel or not self.current_routine:
+            return None
+        return next((s for s in self.current_routine.steps if s["id"] == sel[0]), None)
+
+    def _on_step_select(self):
+        step = self._selected_step()
+        self.current_step = step
+        if not step:
+            return
+        self.step_macro_var.set(self._label_for_macro_id(step.get("macro_id", "")))
+        self.step_after_var.set(AFTER_BY_VALUE.get(step.get("after", "once"), list(AFTER_LABELS.keys())[0]))
+        self.step_thresh_var.set(int(step.get("threshold", 0.8) * 100))
+        self._show_step_thumb(self.storage.load_step_image(step))
+
+    def _apply_step_fields(self):
+        step = self.current_step
+        if not step:
+            return
+        label = self.step_macro_var.get()
+        step["macro_id"] = getattr(self, "_macro_by_label", {}).get(label, step.get("macro_id", ""))
+        step["after"] = AFTER_LABELS.get(self.step_after_var.get(), "once")
+        try:
+            step["threshold"] = max(0.5, min(1.0, int(self.step_thresh_var.get()) / 100.0))
+        except (ValueError, tk.TclError):
+            step["threshold"] = 0.8
+        self._reload_steps_tree()
+        self.steps_tree.selection_set(step["id"])
+        self._save_routines()
+
+    # --------------------------------------------------------- step images
+    def _show_step_thumb(self, image: Optional[Image.Image]):
+        if image is None:
+            self._step_thumb = None
+            self.step_thumb.config(image="", text="No image")
+            return
+        preview = image.copy()
+        preview.thumbnail((110, 70))
+        self._step_thumb = ImageTk.PhotoImage(preview)
+        self.step_thumb.config(image=self._step_thumb, text="")
+
+    def _step_crop_image(self):
+        if not self.current_step:
+            messagebox.showinfo("Step image", "Add and select a step first.")
+            return
+        self.iconify()
+        self.after(250, lambda: ScreenCropper(self, self._on_step_cropped))
+
+    def _on_step_cropped(self, image: Optional[Image.Image]):
+        self.deiconify()
+        if image is None:
+            self._set_status("Crop cancelled")
+            return
+        self._set_step_image(image)
+
+    def _step_paste_image(self):
+        if not self.current_step:
+            messagebox.showinfo("Step image", "Add and select a step first.")
+            return
+        try:
+            grabbed = ImageGrab.grabclipboard()
+        except Exception as exc:  # pragma: no cover - platform specific
+            messagebox.showerror("Paste failed", str(exc))
+            return
+        if isinstance(grabbed, Image.Image):
+            self._set_step_image(grabbed)
+        elif isinstance(grabbed, list) and grabbed:
+            try:
+                self._set_step_image(Image.open(grabbed[0]))
+            except Exception as exc:
+                messagebox.showerror("Paste failed", str(exc))
+        else:
+            messagebox.showinfo("Paste", "No image found on the clipboard.")
+
+    def _set_step_image(self, image: Image.Image):
+        img = image.convert("RGB")
+        self.storage.save_step_image(self.current_step, img)
+        self._show_step_thumb(img)
+        self._reload_steps_tree()
+        self.steps_tree.selection_set(self.current_step["id"])
+        self._save_routines()
+        self._set_status("Step image saved")
+
+    def _step_clear_image(self):
+        if self.current_step:
+            self.storage.delete_step_image(self.current_step)
+            self._show_step_thumb(None)
+            self._reload_steps_tree()
+            self.steps_tree.selection_set(self.current_step["id"])
+            self._save_routines()
+
+    def _step_test_match(self):
+        if not self.current_step:
+            return
+        image = self.storage.load_step_image(self.current_step)
+        if image is None:
+            messagebox.showinfo("Test match", "Attach an image to this step first.")
+            return
+        threshold = self.current_step.get("threshold", 0.8)
+        self._set_status("Testing step match in 1s…")
+        self.after(1000, lambda: self._do_step_test(image, threshold))
+
+    def _do_step_test(self, image, threshold):
+        score, center = self.matcher.score(image)
+        verdict = "MATCH" if score >= threshold else "no match"
+        self._set_status(f"Step similarity {score * 100:.1f}% at {center} — {verdict} (need {threshold * 100:.0f}%)")
+
+    # ------------------------------------------------------- routine playback
+    def _play_routine(self):
+        if not self.current_routine:
+            messagebox.showinfo("Play routine", "Select a routine first.")
+            return
+        self._commit_current_routine()
+        self._save_routines()
+        r = self.current_routine
+
+        macro_events = {m.id: m.events for m in self.macros}
+        built = []
+        skipped = 0
+        for i, step in enumerate(r.steps):
+            template = self.storage.load_step_image(step)
+            events = macro_events.get(step.get("macro_id", ""))
+            if template is None or events is None:
+                skipped += 1
+                continue
+            built.append({
+                "name": self._label_for_macro_id(step.get("macro_id", "")) or f"step {i + 1}",
+                "template": template,
+                "threshold": step.get("threshold", 0.8),
+                "events": events,
+                "after": step.get("after", "once"),
+            })
+        if not built:
+            messagebox.showinfo("Play routine",
+                                "No runnable steps. Each step needs an image and a chosen macro.")
+            return
+        if skipped:
+            self._set_status(f"Note: {skipped} step(s) skipped (missing image or macro)")
+
+        self._set_running(True)
+        self.player.play_routine(
+            steps=built,
+            mode=r.mode,
+            repeat=r.repeat,
+            scan_interval=r.scan_interval,
+            wait_timeout=r.wait_timeout,
+            on_status=lambda s: self.after(0, self._set_status, s),
+            on_finished=lambda: self.after(0, self._on_play_finished),
+        )
+
+    def _set_routine_hotkey(self):
+        if not self.current_routine:
+            self._new_routine()
+        self.hotkeys.pause()
+
+        def on_done(combo):
+            self.hotkeys.resume()
+            if combo is None:
+                return
+            owner = self._hotkey_owner(combo, exclude_routine=self.current_routine)
+            if owner:
+                messagebox.showwarning("Hotkey in use", f"{combo} is already used by '{owner}'.")
+                return
+            self.current_routine.hotkey = combo
+            self.routine_hotkey_var.set(combo)
+            self._refresh_routine_list_preserve()
+            self._save_routines()
+            self._refresh_hotkeys()
+            self._set_status(f"Routine hotkey set to {combo}")
+
+        HotkeyCapture(self, on_done)
+
+    def _clear_routine_hotkey(self):
+        if self.current_routine:
+            self.current_routine.hotkey = ""
+            self.routine_hotkey_var.set("none")
+            self._refresh_routine_list_preserve()
+            self._save_routines()
+            self._refresh_hotkeys()
+
+    def _toggle_routine_by_id(self, routine_id: str):
+        if self.player.running:
+            self.player.stop()
+            return
+        idx = next((i for i, r in enumerate(self.routines) if r.id == routine_id), None)
+        if idx is None:
+            return
+        self.nb.select(1)
+        self.routine_listbox.selection_clear(0, "end")
+        self.routine_listbox.selection_set(idx)
+        self._on_routine_select()
+        self._play_routine()
+
+    def _make_routine_hotkey_callback(self, routine_id: str):
+        return lambda: self.after(0, self._toggle_routine_by_id, routine_id)
+
+    def _save_routines(self):
+        self._commit_current_routine()
+        self.storage.save_routines(self.routines)
+
     # ---------------------------------------------------------------- common
     def _set_status(self, text: str):
         self.status_var.set(text)
@@ -586,6 +1088,7 @@ class MacroApp(tk.Tk):
         self.player.stop()
         self.hotkeys.stop()
         self._save()
+        self._save_routines()
         self.destroy()
 
 
