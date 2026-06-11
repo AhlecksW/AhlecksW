@@ -35,6 +35,7 @@ from .player import (
 from .recorder import MacroRecorder
 from .share import decode_macro, encode_macro
 from .storage import Macro, Routine, Storage, new_step
+from .theme import FROST_BG, apply_theme, style_listbox, style_text
 
 ROUTINE_MODES = {"Sequence (in order)": "sequence", "Reactive (watch & react)": "reactive"}
 MODE_LABELS = {v: k for k, v in ROUTINE_MODES.items()}
@@ -64,9 +65,10 @@ def data_dir() -> str:
 class MacroApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("AhlecksW Macro Automator")
+        self.title("Cryo Chamber")
         self.geometry("840x560")
         self.minsize(760, 520)
+        apply_theme(self)
 
         self.storage = Storage(data_dir())
         self.recorder = MacroRecorder()
@@ -114,6 +116,7 @@ class MacroApp(tk.Tk):
         left.pack(side="left", fill="y", padx=(0, 8))
         ttk.Label(left, text="Macros", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         self.listbox = tk.Listbox(left, width=26, height=22, exportselection=False)
+        style_listbox(self.listbox)
         self.listbox.pack(fill="y", expand=True)
         self.listbox.bind("<<ListboxSelect>>", lambda _e: self._on_select())
         btns = ttk.Frame(left)
@@ -228,6 +231,7 @@ class MacroApp(tk.Tk):
         left.pack(side="left", fill="y", padx=(0, 8))
         ttk.Label(left, text="Routines", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         self.routine_listbox = tk.Listbox(left, width=26, height=18, exportselection=False)
+        style_listbox(self.routine_listbox)
         self.routine_listbox.pack(fill="y", expand=True)
         self.routine_listbox.bind("<<ListboxSelect>>", lambda _e: self._on_routine_select())
         rb = ttk.Frame(left)
@@ -691,7 +695,9 @@ class MacroApp(tk.Tk):
         dlg.geometry("520x260")
         dlg.transient(self)
         ttk.Label(dlg, text=label, padding=8, wraplength=500).pack(anchor="w")
+        dlg.configure(bg=FROST_BG)
         box = tk.Text(dlg, height=8, wrap="char")
+        style_text(box)
         box.pack(fill="both", expand=True, padx=8)
         box.insert("1.0", text)
         if readonly:

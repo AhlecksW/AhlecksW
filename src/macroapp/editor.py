@@ -13,6 +13,8 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable, List, Optional
 
+from .theme import FROST_BG
+
 
 def _details(ev: dict) -> str:
     t = ev.get("type")
@@ -34,6 +36,7 @@ class EventEditor(tk.Toplevel):
         self.on_save = on_save
         self.title("Edit steps")
         self.geometry("560x460")
+        self.configure(bg=FROST_BG)
         self.transient(master)
 
         # Working copy so edits aren't applied until Save.

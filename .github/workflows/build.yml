@@ -1,6 +1,6 @@
 name: Build Windows EXE
 
-# Builds letsgo.exe on a real Windows runner (PyInstaller can't
+# Builds cryochamber.exe on a real Windows runner (PyInstaller can't
 # cross-compile, so this is how we produce a downloadable Windows binary).
 #
 # What you get:
@@ -41,7 +41,7 @@ jobs:
       - name: Build executable
         run: >
           pyinstaller --noconfirm --onefile --windowed
-          --name letsgo
+          --name cryochamber
           --paths src
           --collect-submodules pynput
           main.py
@@ -49,8 +49,8 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: letsgo-windows
-          path: dist/letsgo.exe
+          name: cryochamber-windows
+          path: dist/cryochamber.exe
           if-no-files-found: error
 
       # Rolling "latest" download for any push to a build branch (not tags).
@@ -62,10 +62,10 @@ jobs:
           name: Latest build
           body: |
             Automatic build of the latest commit on `${{ github.ref_name }}`.
-            Download **letsgo.exe** below and double-click to run (Windows).
+            Download **cryochamber.exe** below and double-click to run (Windows).
             Unsigned build: if SmartScreen warns, click **More info → Run anyway**.
           prerelease: true
-          files: dist/letsgo.exe
+          files: dist/cryochamber.exe
 
       # A proper versioned release when you push a tag like v1.0.0.
       - name: Publish tagged release
@@ -74,4 +74,4 @@ jobs:
         with:
           name: ${{ github.ref_name }}
           generate_release_notes: true
-          files: dist/letsgo.exe
+          files: dist/cryochamber.exe

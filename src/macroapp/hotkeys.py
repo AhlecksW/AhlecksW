@@ -103,6 +103,11 @@ class HotkeyCapture(tk.Toplevel):
         self.on_done = on_done
         self.title("Set hotkey")
         self.resizable(False, False)
+        try:
+            from .theme import FROST_BG
+            self.configure(bg=FROST_BG)
+        except Exception:
+            pass
         self.transient(master)
         self.grab_set()
 

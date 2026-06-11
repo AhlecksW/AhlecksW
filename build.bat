@@ -1,5 +1,5 @@
 @echo off
-REM Build a single-file Windows .exe for the AhlecksW Macro Automator.
+REM Build a single-file Windows .exe for Cryo Chamber.
 REM Run this in a Windows command prompt with Python 3.9+ installed.
 
 echo === Creating virtual environment ===
@@ -13,12 +13,12 @@ pip install pyinstaller
 
 echo === Building executable ===
 pyinstaller --noconfirm --onefile --windowed ^
-  --name letsgo ^
+  --name cryochamber ^
   --paths src ^
   --collect-submodules pynput ^
   main.py
 
 echo.
 echo === Done ===
-echo Your executable is at: dist\letsgo.exe
+echo Your executable is at: dist\cryochamber.exe
 pause

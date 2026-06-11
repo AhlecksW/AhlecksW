@@ -1,4 +1,4 @@
-"""Entry point for the AhlecksW Macro Automator.
+"""Entry point for Cryo Chamber.
 
 Run from source:  python main.py
 Build an .exe:     see build.bat / README.md

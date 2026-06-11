@@ -1,6 +1,6 @@
 """Export/import a macro as a single copy-paste 'share code'.
 
-A share code is ``AWMACRO1:`` followed by base64 of a zlib-compressed JSON blob
+A share code is ``CRYO1:`` followed by base64 of a zlib-compressed JSON blob
 containing the macro fields and, if present, its trigger image embedded as
 base64 PNG. This makes a macro portable as one chunk of text that someone else
 can paste into the app to use it (image included).
@@ -18,7 +18,7 @@ from PIL import Image
 
 from .storage import Macro
 
-PREFIX = "AWMACRO1:"
+PREFIX = "CRYO1:"
 
 
 def encode_macro(macro: Macro, image: Optional[Image.Image] = None) -> str:
@@ -42,7 +42,7 @@ def encode_macro(macro: Macro, image: Optional[Image.Image] = None) -> str:
 def decode_macro(text: str) -> Tuple[Macro, Optional[Image.Image]]:
     text = (text or "").strip()
     if not text.startswith(PREFIX):
-        raise ValueError("That doesn't look like a macro share code (missing AWMACRO1: header).")
+        raise ValueError("That doesn't look like a macro share code (missing CRYO1: header).")
     try:
         comp = base64.b64decode(text[len(PREFIX):], validate=True)
         raw = zlib.decompress(comp)
