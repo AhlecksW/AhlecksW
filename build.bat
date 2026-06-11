@@ -13,12 +13,12 @@ pip install pyinstaller
 
 echo === Building executable ===
 pyinstaller --noconfirm --onefile --windowed ^
-  --name AhlecksWMacro ^
+  --name letsgo ^
   --paths src ^
   --collect-submodules pynput ^
   main.py
 
 echo.
 echo === Done ===
-echo Your executable is at: dist\AhlecksWMacro.exe
+echo Your executable is at: dist\letsgo.exe
 pause

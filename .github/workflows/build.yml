@@ -1,0 +1,77 @@
+name: Build Windows EXE
+
+# Builds letsgo.exe on a real Windows runner (PyInstaller can't
+# cross-compile, so this is how we produce a downloadable Windows binary).
+#
+# What you get:
+#   - Every push: the .exe as a downloadable Actions "artifact".
+#   - Every push to a build branch: a rolling "latest" pre-release with the .exe.
+#   - Push a tag like v1.0.0: a proper versioned GitHub Release with the .exe.
+
+on:
+  push:
+    branches:
+      - main
+      - "claude/**"
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable
+        run: >
+          pyinstaller --noconfirm --onefile --windowed
+          --name letsgo
+          --paths src
+          --collect-submodules pynput
+          main.py
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: letsgo-windows
+          path: dist/letsgo.exe
+          if-no-files-found: error
+
+      # Rolling "latest" download for any push to a build branch (not tags).
+      - name: Publish rolling "latest" release
+        if: ${{ startsWith(github.ref, 'refs/tags/') == false }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          body: |
+            Automatic build of the latest commit on `${{ github.ref_name }}`.
+            Download **letsgo.exe** below and double-click to run (Windows).
+            Unsigned build: if SmartScreen warns, click **More info → Run anyway**.
+          prerelease: true
+          files: dist/letsgo.exe
+
+      # A proper versioned release when you push a tag like v1.0.0.
+      - name: Publish tagged release
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: dist/letsgo.exe

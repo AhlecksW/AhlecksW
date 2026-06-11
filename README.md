@@ -58,6 +58,23 @@ similarity threshold).
   status: Best similarity 87.3% at (640, 360) — MATCH (need 80%)
 ```
 
+## Download (no building needed)
+
+Every push is built automatically on Windows by GitHub Actions. To get a
+ready-to-run program:
+
+- Open the repo's **Releases** page and download **`letsgo.exe`** from the
+  **Latest build** release, **or**
+- Open the **Actions** tab → latest **Build Windows EXE** run → download the
+  **`letsgo-windows`** artifact.
+
+Double-click `letsgo.exe` to run — no Python or install required. It's an
+unsigned build, so the first time Windows SmartScreen may say "Windows protected
+your PC": click **More info → Run anyway**. (Antivirus can also flag automation
+tools that simulate keys/clicks; allow it if prompted.)
+
+To cut a numbered release, push a tag, e.g. `git tag v1.0.0 && git push --tags`.
+
 ## Run from source
 
 ```bash
@@ -71,7 +88,7 @@ On a Windows machine with Python 3.9+ installed, double-click **`build.bat`**
 (or run it from a command prompt). When it finishes, your executable is at:
 
 ```
-dist\AhlecksWMacro.exe
+dist\letsgo.exe
 ```
 
 The `.exe` is self-contained — copy it anywhere. It creates a `data/` folder
