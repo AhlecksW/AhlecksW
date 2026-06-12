@@ -23,7 +23,7 @@ from PIL import Image, ImageGrab, ImageTk
 
 from .cropper import ScreenCropper
 from .editor import EventEditor
-from .hotkeys import HotkeyCapture, HotkeyManager
+from .hotkeys import HotkeyCaptureSession, HotkeyManager, pretty_hotkey
 from .matcher import ImageMatcher
 from .player import (
     MATCH_CLICK_IMAGE,
@@ -337,7 +337,7 @@ class MacroApp(tk.Tk):
         self.listbox.delete(0, "end")
         for m in self.macros:
             tag = "🖼" if m.has_image else "  "
-            hk = f"  [{m.hotkey}]" if m.hotkey else ""
+            hk = f"  [{pretty_hotkey(m.hotkey)}]" if m.hotkey else ""
             self.listbox.insert("end", f"{tag} {m.name}  ({len(m.events)}){hk}")
 
     def _selected_index(self) -> Optional[int]:
@@ -360,7 +360,7 @@ class MacroApp(tk.Tk):
         self.mode_var.set(LABEL_BY_MODE.get(m.match_mode, list(MATCH_LABELS.keys())[0]))
         self.threshold_scale.set(int(m.threshold * 100))
         self.threshold_label.config(text=f"{int(m.threshold * 100)}%")
-        self.hotkey_var.set(m.hotkey or "none")
+        self.hotkey_var.set(pretty_hotkey(m.hotkey) or "none")
         self.speed_var.set(str(m.speed))
         self._current_image = self.storage.load_image(m)
         self._show_thumb(self._current_image)
@@ -586,24 +586,23 @@ class MacroApp(tk.Tk):
     def _set_hotkey(self):
         if not self.current:
             self._new_macro()
-        self.hotkeys.pause()  # don't let the manager swallow keys while capturing
+        self._capture_hotkey(self.hotkey_var, self._save_macro_hotkey)
 
-        def on_done(combo):
-            self.hotkeys.resume()
-            if combo is None:
-                return
-            owner = self._hotkey_owner(combo, exclude_macro=self.current)
-            if owner:
-                messagebox.showwarning("Hotkey in use", f"{combo} is already used by '{owner}'.")
-                return
-            self.current.hotkey = combo
-            self.hotkey_var.set(combo)
-            self._refresh_list_preserve()
-            self._save()
-            self._refresh_hotkeys()
-            self._set_status(f"Hotkey set to {combo}")
-
-        HotkeyCapture(self, on_done)
+    def _save_macro_hotkey(self, combo):
+        if combo is None:  # cancelled
+            self.hotkey_var.set(pretty_hotkey(self.current.hotkey) or "none")
+            return
+        owner = self._hotkey_owner(combo, exclude_macro=self.current)
+        if owner:
+            messagebox.showwarning("Hotkey in use", f"{pretty_hotkey(combo)} is already used by {owner}.")
+            self.hotkey_var.set(pretty_hotkey(self.current.hotkey) or "none")
+            return
+        self.current.hotkey = combo
+        self.hotkey_var.set(pretty_hotkey(combo))
+        self._refresh_list_preserve()
+        self._save()
+        self._refresh_hotkeys()
+        self._set_status(f"Hotkey set to {pretty_hotkey(combo)}")
 
     def _clear_hotkey(self):
         if self.current:
@@ -612,6 +611,25 @@ class MacroApp(tk.Tk):
             self._refresh_list_preserve()
             self._save()
             self._refresh_hotkeys()
+
+    # ----------------------------------------------------- inline hotkey capture
+    def _capture_hotkey(self, var, on_set):
+        """Listen for the next key combo right in the window (no popup)."""
+        if getattr(self, "_hk_session", None):
+            return
+        self.hotkeys.pause()  # don't let the manager swallow keys while capturing
+        var.set("press keys… (Esc cancels)")
+
+        def on_change(combo):
+            self.after(0, var.set, pretty_hotkey(combo) or "press keys…")
+
+        def on_done(combo):
+            self._hk_session = None
+            self.hotkeys.resume()
+            self.after(0, lambda: on_set(combo))
+
+        self._hk_session = HotkeyCaptureSession(on_change=on_change, on_done=on_done)
+        self._hk_session.start()
 
     def _refresh_hotkeys(self):
         mapping = {}
@@ -728,24 +746,31 @@ class MacroApp(tk.Tk):
         self._set_status("Copied to clipboard")
 
     # ========================================================== ROUTINES =====
-    def _macro_label(self, m: Macro) -> str:
-        return f"{m.name}  ·{m.id[:4]}"
-
     def _update_step_macro_combo(self):
-        self._macro_by_label = {self._macro_label(m): m.id for m in self.macros}
-        self.step_macro_combo["values"] = list(self._macro_by_label.keys())
+        # Show plain macro names; track ids in a parallel list so duplicate
+        # names still resolve to the right macro (selection is by position).
+        self._step_macro_ids = [m.id for m in self.macros]
+        self.step_macro_combo["values"] = [m.name for m in self.macros]
 
     def _label_for_macro_id(self, macro_id: str) -> str:
         for m in self.macros:
             if m.id == macro_id:
-                return self._macro_label(m)
+                return m.name
         return ""
+
+    def _show_step_macro_selection(self, step: dict):
+        ids = getattr(self, "_step_macro_ids", [])
+        mid = step.get("macro_id", "")
+        if mid in ids:
+            self.step_macro_combo.current(ids.index(mid))
+        else:
+            self.step_macro_combo.set("")
 
     # ---------------------------------------------------------- routine list
     def _refresh_routine_list(self):
         self.routine_listbox.delete(0, "end")
         for r in self.routines:
-            hk = f"  [{r.hotkey}]" if r.hotkey else ""
+            hk = f"  [{pretty_hotkey(r.hotkey)}]" if r.hotkey else ""
             self.routine_listbox.insert("end", f"{r.name}  ({len(r.steps)} steps){hk}")
 
     def _selected_routine_index(self) -> Optional[int]:
@@ -766,7 +791,7 @@ class MacroApp(tk.Tk):
         self.routine_mode_var.set(MODE_LABELS.get(r.mode, list(ROUTINE_MODES.keys())[0]))
         self.routine_repeat_var.set(str(r.repeat))
         self.routine_scan_var.set(str(r.scan_interval))
-        self.routine_hotkey_var.set(r.hotkey or "none")
+        self.routine_hotkey_var.set(pretty_hotkey(r.hotkey) or "none")
         self._update_step_macro_combo()
         self._reload_steps_tree()
         self._show_step_thumb(None)
@@ -891,7 +916,7 @@ class MacroApp(tk.Tk):
         if hasattr(self, "step_macro_combo"):
             self._update_step_macro_combo()
             if self.current_step:
-                self.step_macro_var.set(self._label_for_macro_id(self.current_step.get("macro_id", "")))
+                self._show_step_macro_selection(self.current_step)
 
     def _on_step_select(self):
         step = self._selected_step()
@@ -899,7 +924,7 @@ class MacroApp(tk.Tk):
         if not step:
             return
         self._update_step_macro_combo()  # reflect any macros added/renamed since
-        self.step_macro_var.set(self._label_for_macro_id(step.get("macro_id", "")))
+        self._show_step_macro_selection(step)
         self.step_after_var.set(AFTER_BY_VALUE.get(step.get("after", "once"), list(AFTER_LABELS.keys())[0]))
         self.step_thresh_var.set(int(step.get("threshold", 0.8) * 100))
         self._show_step_thumb(self.storage.load_step_image(step))
@@ -908,8 +933,10 @@ class MacroApp(tk.Tk):
         step = self.current_step
         if not step:
             return
-        label = self.step_macro_var.get()
-        step["macro_id"] = getattr(self, "_macro_by_label", {}).get(label, step.get("macro_id", ""))
+        idx = self.step_macro_combo.current()
+        ids = getattr(self, "_step_macro_ids", [])
+        if idx is not None and 0 <= idx < len(ids):
+            step["macro_id"] = ids[idx]
         step["after"] = AFTER_LABELS.get(self.step_after_var.get(), "once")
         try:
             step["threshold"] = max(0.5, min(1.0, int(self.step_thresh_var.get()) / 100.0))
@@ -1042,24 +1069,23 @@ class MacroApp(tk.Tk):
     def _set_routine_hotkey(self):
         if not self.current_routine:
             self._new_routine()
-        self.hotkeys.pause()
+        self._capture_hotkey(self.routine_hotkey_var, self._save_routine_hotkey)
 
-        def on_done(combo):
-            self.hotkeys.resume()
-            if combo is None:
-                return
-            owner = self._hotkey_owner(combo, exclude_routine=self.current_routine)
-            if owner:
-                messagebox.showwarning("Hotkey in use", f"{combo} is already used by '{owner}'.")
-                return
-            self.current_routine.hotkey = combo
-            self.routine_hotkey_var.set(combo)
-            self._refresh_routine_list_preserve()
-            self._save_routines()
-            self._refresh_hotkeys()
-            self._set_status(f"Routine hotkey set to {combo}")
-
-        HotkeyCapture(self, on_done)
+    def _save_routine_hotkey(self, combo):
+        if combo is None:  # cancelled
+            self.routine_hotkey_var.set(pretty_hotkey(self.current_routine.hotkey) or "none")
+            return
+        owner = self._hotkey_owner(combo, exclude_routine=self.current_routine)
+        if owner:
+            messagebox.showwarning("Hotkey in use", f"{pretty_hotkey(combo)} is already used by {owner}.")
+            self.routine_hotkey_var.set(pretty_hotkey(self.current_routine.hotkey) or "none")
+            return
+        self.current_routine.hotkey = combo
+        self.routine_hotkey_var.set(pretty_hotkey(combo))
+        self._refresh_routine_list_preserve()
+        self._save_routines()
+        self._refresh_hotkeys()
+        self._set_status(f"Routine hotkey set to {pretty_hotkey(combo)}")
 
     def _clear_routine_hotkey(self):
         if self.current_routine:
@@ -1100,6 +1126,8 @@ class MacroApp(tk.Tk):
     def _on_close(self):
         if self.recorder.recording:
             self.recorder.stop()
+        if getattr(self, "_hk_session", None):
+            self._hk_session.stop()
         self.player.stop()
         self.hotkeys.stop()
         self._save()

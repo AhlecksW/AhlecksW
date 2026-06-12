@@ -1,15 +1,14 @@
 """Global (system-wide) hotkeys.
 
 ``HotkeyManager`` keeps a single ``pynput`` ``GlobalHotKeys`` listener alive and
-rebuilds it whenever the set of bindings changes. ``HotkeyCapture`` is a small
-modal dialog that records the next key combination the user presses and returns
-it in pynput's canonical string form (e.g. ``"<ctrl>+<alt>+1"``).
+rebuilds it whenever the set of bindings changes. ``HotkeyCaptureSession`` records
+the next key combination the user presses (used for inline capture in the main
+window) and reports it in pynput's canonical string form (e.g. ``"<ctrl>+<alt>+1"``).
+``pretty_hotkey`` turns that canonical form into a friendly label for display.
 """
 
 from __future__ import annotations
 
-import tkinter as tk
-from tkinter import ttk
 from typing import Callable, Dict, Optional
 
 from pynput import keyboard
@@ -22,6 +21,15 @@ _MOD_CANON = {
     "cmd": "cmd", "cmd_l": "cmd", "cmd_r": "cmd",
 }
 _MOD_ORDER = ["ctrl", "alt", "shift", "cmd"]
+
+# Friendly display names for Windows virtual-key codes that pynput reports
+# without a usable name (numpad keys are the common case).
+_VK_NAMES = {
+    96: "Num0", 97: "Num1", 98: "Num2", 99: "Num3", 100: "Num4",
+    101: "Num5", 102: "Num6", 103: "Num7", 104: "Num8", 105: "Num9",
+    106: "Num*", 107: "Num+", 109: "Num-", 110: "Num.", 111: "Num/",
+    144: "NumLock", 145: "ScrollLock",
+}
 
 
 class HotkeyManager:
@@ -58,7 +66,6 @@ class HotkeyManager:
             self._listener = keyboard.GlobalHotKeys(dict(self._mapping))
             self._listener.start()
         except Exception:
-            # An invalid combo shouldn't take the whole app down.
             self._listener = None
 
     def _stop_listener(self) -> None:
@@ -78,7 +85,6 @@ def _key_token(key) -> Optional[str]:
     char = getattr(key, "char", None)
     if char:
         c = char.lower()
-        # Control characters come through as e.g. '\x01' for ctrl+a; fall back to vk.
         if c.isprintable() and not c.isspace():
             return c
     if name:
@@ -95,79 +101,71 @@ def combo_to_string(mods: set, main: str) -> str:
     return "+".join(parts)
 
 
-class HotkeyCapture(tk.Toplevel):
-    """Modal dialog: records the next key combo and reports it via ``on_done``."""
+def pretty_hotkey(combo: Optional[str]) -> str:
+    """Turn a canonical hotkey string into a friendly label, e.g.
+    '<ctrl>+<alt>+<105>' -> 'Ctrl+Alt+Num9'."""
+    if not combo:
+        return ""
+    out = []
+    for part in combo.split("+"):
+        if part.startswith("<") and part.endswith(">"):
+            inner = part[1:-1]
+            if inner.isdigit():
+                out.append(_VK_NAMES.get(int(inner), f"Key{inner}"))
+            else:
+                out.append(inner.replace("_", " ").title())
+        else:
+            out.append(part.upper() if len(part) == 1 else part)
+    return "+".join(out)
 
-    def __init__(self, master, on_done: Callable[[Optional[str]], None]):
-        super().__init__(master)
+
+class HotkeyCaptureSession:
+    """Records the next key combo via a temporary listener (no UI of its own).
+
+    ``on_change`` is called with the in-progress canonical string as modifiers
+    are pressed/released; ``on_done`` is called once with the final combo (or
+    None if cancelled with Esc). Both fire on the listener thread — the caller
+    is responsible for marshalling onto the UI thread.
+    """
+
+    def __init__(self, on_change: Callable[[str], None], on_done: Callable[[Optional[str]], None]):
+        self.on_change = on_change
         self.on_done = on_done
-        self.title("Set hotkey")
-        self.resizable(False, False)
-        try:
-            from .theme import FROST_BG
-            self.configure(bg=FROST_BG)
-        except Exception:
-            pass
-        self.transient(master)
-        self.grab_set()
-
         self._mods: set = set()
+        self._listener: Optional[keyboard.Listener] = None
 
-        ttk.Label(
-            self, text="Press the key combination…\n(Esc to cancel)",
-            justify="center", padding=20, font=("Segoe UI", 11),
-        ).pack()
-        self._preview = ttk.Label(self, text="", font=("Segoe UI", 12, "bold"))
-        self._preview.pack(pady=(0, 14))
-
-        self._listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
+    def start(self) -> None:
+        self._listener = keyboard.Listener(on_press=self._press, on_release=self._release)
         self._listener.start()
-        self.protocol("WM_DELETE_WINDOW", lambda: self._finish(None))
-        self.update_idletasks()
-        self._center_on(master)
 
-    def _center_on(self, master):
-        try:
-            x = master.winfo_rootx() + (master.winfo_width() - self.winfo_width()) // 2
-            y = master.winfo_rooty() + (master.winfo_height() - self.winfo_height()) // 2
-            self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
-        except Exception:
-            pass
+    def stop(self) -> None:
+        if self._listener is not None:
+            try:
+                self._listener.stop()
+            except Exception:
+                pass
+            self._listener = None
 
-    def _on_press(self, key):
+    def _press(self, key):
         name = getattr(key, "name", None)
         if name == "esc":
             self._finish(None)
             return
         if name in _MOD_CANON:
             self._mods.add(_MOD_CANON[name])
-            self._update_preview(None)
+            self.on_change(combo_to_string(self._mods, "…"))
             return
         main = _key_token(key)
         if main is None:
             return
-        combo = combo_to_string(self._mods, main)
-        self._update_preview(main)
-        self._finish(combo)
+        self._finish(combo_to_string(self._mods, main))
 
-    def _on_release(self, key):
+    def _release(self, key):
         name = getattr(key, "name", None)
         if name in _MOD_CANON:
             self._mods.discard(_MOD_CANON[name])
-            self._update_preview(None)
-
-    def _update_preview(self, main: Optional[str]):
-        shown = combo_to_string(self._mods, main if main else "…")
-        try:
-            self.after(0, lambda: self._preview.config(text=shown))
-        except Exception:
-            pass
+            self.on_change(combo_to_string(self._mods, "…"))
 
     def _finish(self, combo: Optional[str]):
-        try:
-            self._listener.stop()
-        except Exception:
-            pass
-        self.grab_release()
-        self.destroy()
+        self.stop()
         self.on_done(combo)
