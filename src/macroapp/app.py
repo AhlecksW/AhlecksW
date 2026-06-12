@@ -103,6 +103,7 @@ class MacroApp(tk.Tk):
     def _build_ui(self):
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True)
+        self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         macros_tab = ttk.Frame(self.nb, padding=8)
         self.nb.add(macros_tab, text="Macros")
@@ -885,11 +886,19 @@ class MacroApp(tk.Tk):
             return None
         return next((s for s in self.current_routine.steps if s["id"] == sel[0]), None)
 
+    def _on_tab_changed(self, _event=None):
+        # Keep the routine step's macro picker in sync with the Macros tab.
+        if hasattr(self, "step_macro_combo"):
+            self._update_step_macro_combo()
+            if self.current_step:
+                self.step_macro_var.set(self._label_for_macro_id(self.current_step.get("macro_id", "")))
+
     def _on_step_select(self):
         step = self._selected_step()
         self.current_step = step
         if not step:
             return
+        self._update_step_macro_combo()  # reflect any macros added/renamed since
         self.step_macro_var.set(self._label_for_macro_id(step.get("macro_id", "")))
         self.step_after_var.set(AFTER_BY_VALUE.get(step.get("after", "once"), list(AFTER_LABELS.keys())[0]))
         self.step_thresh_var.set(int(step.get("threshold", 0.8) * 100))
